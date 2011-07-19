@@ -8,6 +8,9 @@ from scipy import signal
 from scipy import convolve
 from scipy.io import wavfile
 
+from scikits.learn import svm
+from scikits.learn.naive_bayes import GNB
+
 import matplotlib
 from matplotlib import pyplot, pylab
 
@@ -47,10 +50,12 @@ class SpeechFrame(object):
 		q=scipy.r_[ms1:ms20]/float(self.fs);
 		return (q,x_hat)
 	
-	def getCepstrumPeak(self):
+	def _getCepstrumPeak(self):
 		(q,c) = self.cepstrum()
 		index = c.argmax()
 		return (q[index],c[index])
+	
+	cepstrumPeak = property(_getCepstrumPeak)
 
 	def _getPitch(self):
 		ms2 = math.floor(self.fs/500) # 2ms
@@ -87,6 +92,7 @@ class Speech(object):
 		self.windowLength=0
 		self.window = numpy.zeros(0)
 		self.frame = numpy.array
+		self.stats = []
 	
 	def open(self, path):
 		self.wav = wavfile.read(path)
@@ -134,13 +140,13 @@ class Speech(object):
 		zerolen = math.ceil(len(self.window)/2)
 		tempwav = numpy.concatenate((numpy.zeros(zerolen),self.signal,
 										numpy.zeros(zerolen)))
-		for i in xrange(int(math.floor(self.sampleLength/self.windowOffset))):
+		for i in xrange(1,int(math.floor(self.sampleLength/self.windowOffset)+1)):
 			offset = i*self.windowOffset
 			yield tempwav[offset:offset+self.windowLength]
 	
 	def getWindowedFrame(self):
 		for frame in self._getFrame():
-			yield SoundFrame(frame*self.window,self.samplingFrequency)
+			yield SpeechFrame(frame*self.window,self.samplingFrequency)
 	
 	def filter(self,lowcutoff, highcutoff):
 		self.lowcutoff = lowcutoff
@@ -159,7 +165,14 @@ class Speech(object):
 		self._d = - (a+b) 
 		self._d[nyq/2] = self._d[nyq/2] + 1
 		self.signal = convolve(self._d, self.signal)
-		
+	
+	def runStatistics(self):
+		self.stats = []
+		for frame in self.getWindowedFrame():
+			self.stats.append([frame.logEnergy,  
+								frame.cepstrumPeak[0],
+								frame.pitch[0]])
+	
 	def runAnimation(self):
 		
 		f = pyplot.figure(1)
@@ -182,7 +195,7 @@ class Speech(object):
 			pylab.subplot(312)
 			pyplot.plot(*frame.cepstrum())
 			pyplot.hold(True)
-			(q,c) = frame.getCepstrumPeak()
+			(q,c) = frame.cepstrumPeak
 			pylab.title("Cepstrum (q peak: %.4f, pitch: %.2f)" % (q, 1/q))
 			pyplot.scatter(q,c,s=100,c='r')
 			pyplot.hold(False)
@@ -201,15 +214,86 @@ class Speech(object):
 	
 def main():
 	pass
+
+def plotresult(speech, clf, gth=None):
+	f = pyplot.figure(1)
+	f.subplotpars.update(hspace=1,wspace=1)
+	
+	for frame in speech.getWindowedFrame():
+		
+		if clf.predict([[frame.logEnergy, 
+							frame.cepstrumPeak[0],
+							frame.pitch[0]]])[0] == 1 :
+			sys.stdout.write("Voiced")
+			
+		else:
+			sys.stdout.write("Unvoiced")
+			
+		if not gth is None:
+			t = gth.pop()
+			if t == 1:
+				sys.stdout.write(",Voiced")
+			else:
+				sys.stdout.write(",Unvoiced")
+		sys.stdout.write("\r\n")
+			
+		pylab.subplot(331)
+		pyplot.plot(frame.frame)
+		pylab.title("ST waveform")
+		pylab.ylim([speech.signal.min(),speech.signal.max()])
+		pylab.xlim([0,speech.windowLength])
+		pylab.subplot(332)
+		pyplot.bar(0,frame.logEnergy,2)
+		pylab.title("ST Energy %.1f" % frame.logEnergy)
+		pylab.ylim([-200,200])
+		pylab.subplot(333)
+		pyplot.bar(0,frame.zeroCrossings,2)
+		pylab.title("ST ZC %.1f" % frame.zeroCrossings)
+		pylab.ylim([0,100])
+		pylab.subplot(312)
+		pyplot.plot(*frame.cepstrum())
+		pyplot.hold(True)
+		(q,c) = frame.cepstrumPeak
+		pylab.title("Cepstrum (q peak: %.4f, pitch: %.2f)" % (q, 1/q))
+		pyplot.scatter(q,c,s=100,c='r')
+		pyplot.hold(False)
+		pylab.subplot(313)
+		pyplot.plot(*frame.autoCorrelate())
+		pyplot.hold(True)
+		(pitch,r) = frame.pitch
+		pylab.title("Autocorrelation (pitch: %3.1f)" % pitch)
+		t = 1/float(pitch)
+		pyplot.scatter(t,r,s=100,c='r')
+		pyplot.hold(False)
+		matplotlib.pylab.draw()
+		f.clear()
+		
 	
 if __name__ == '__main__':
 	import time
-	main()
+	from groundtruth import f1nw000016kdet
+	f1 = [1 if v > 0 else 0 for v in f1nw000016kdet]
 	sound = Speech("test_sounds/f1nw000016k.wav")
-	sound.setWindow(512,160,Sound.HAMMING)
-	sound.filter(100,900)
-	sound.runAnimation()
+	sound.setWindow(512,162.5,Speech.HAMMING)
+	sound.filter(50,600)
+	#sound.runAnimation()
+	sound.runStatistics()
+	
+	clf = svm.SVC(kernel='linear')	
+	#clf = GNB()
+	X  = numpy.array(sound.stats)
+	Y = numpy.array(f1)
+	clf.fit(X,Y)
+	a = clf.predict(sound.stats)
+	b = numpy.array([f1,a]).transpose()
+	
+	
+	results = numpy.array([i[0]-i[1] for i in b])
+	results = numpy.abs(results)
+	print numpy.sum(results)
+	
+	
 		
-		
+			
 		
 		
